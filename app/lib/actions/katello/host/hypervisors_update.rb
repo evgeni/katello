@@ -10,17 +10,20 @@ module Actions
 
         def run
           output[:results] = input[:results]
-        end
-
-        def finalize
           @hypervisors = input[:hypervisors]
           return unless @hypervisors
 
           User.as_anonymous_admin do
-            load_resources
+            ActiveRecord::Base.transaction do
+              load_resources
+
+              @hosts.each do |uuid, host|
+                update_subscription_facet(uuid, host)
+              end
+            end
 
             @hosts.each do |uuid, host|
-              update_subscription_facet(uuid, host)
+              update_facts(uuid, host)
             end
           end
         end
@@ -34,7 +37,7 @@ module Actions
           load_hosts_by_duplicate_name
           create_missing_hosts
 
-          candlepin_data = ::Katello::Resources::Candlepin::Consumer.get_all(@hosts.keys)
+          candlepin_data = ::Katello::Resources::Candlepin::Consumer.get_all_with_facts(@hosts.keys)
           @candlepin_attributes = candlepin_data.map { |consumer| [consumer[:uuid], consumer] }.to_h
         end
 
@@ -113,6 +116,13 @@ module Actions
           end
           host.save!
         end
+
+        def update_facts(uuid, host)
+          if @candlepin_attributes.key?(uuid)
+            ::Katello::Host::SubscriptionFacet.update_facts(host, @candlepin_attributes[uuid][:facts]) unless @candlepin_attributes[uuid][:facts].blank?
+          end
+        end
+
 
         def rescue_strategy
           Dynflow::Action::Rescue::Skip

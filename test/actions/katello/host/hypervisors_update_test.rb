@@ -5,6 +5,8 @@ module Katello::Host
     include Dynflow::Testing
     include Support::Actions::Fixtures
     include FactoryBot::Syntax::Methods
+    include FactImporterIsolation
+    allow_transactions_for_any_importer
 
     before :each do
       User.current = users(:admin)
@@ -20,15 +22,20 @@ module Katello::Host
       @hypervisor_name = "virt-who-#{@host.name}-#{@organization.id}"
       @host.update_attributes!(:name => @hypervisor_name)
       @hypervisor_results = [{ :name => old_name, :uuid => @host.subscription_facet.uuid, :organization_label => @organization.label }]
+      @facts = {
+            'hypervisor.type' => 'VMware ESXi',
+            'cpu.cpu_socket(s)' => '2',
+            'hypervisor.version' => '6.7.0'
+      }
+
       ::Katello::Resources::Candlepin::Consumer.stubs(:get).returns(
-        [
-          {
-            uuid: @host.subscription_facet.uuid,
-            entitlementStatus: Katello::SubscriptionStatus::UNKNOWN,
-            'guestIds' => ['test-id-1'],
-            'entitlementCount' => 0
-          }
-        ]
+        {
+          uuid: @host.subscription_facet.uuid,
+          entitlementStatus: Katello::SubscriptionStatus::UNKNOWN,
+          'guestIds' => ['test-id-1'],
+          'entitlementCount' => 0,
+          facts: @facts
+        }
       )
     end
 
@@ -42,10 +49,11 @@ module Katello::Host
         action = create_action(::Actions::Katello::Host::HypervisorsUpdate)
 
         plan_action(action, :hypervisors => @hypervisor_results)
-        finalize_action(action)
+        run_action(action)
 
         @host.reload
         assert_not_nil @host.subscription_facet
+        assert_equal @facts['hypervisor.type'], @host.facts['hypervisor::type']
       end
 
       it 'existing hypervisor, no facet' do
@@ -54,9 +62,10 @@ module Katello::Host
         action = create_action(::Actions::Katello::Host::HypervisorsUpdate)
 
         plan_action(action, :hypervisors => @hypervisor_results)
-        finalize_action(action)
+        run_action(action)
         @host.reload
         assert_not_nil @host.subscription_facet
+        assert_equal @facts['hypervisor.type'], @host.facts['hypervisor::type']
       end
 
       it 'existing hypervisor, renamed' do
@@ -65,7 +74,7 @@ module Katello::Host
 
         plan_action(action, :hypervisors => @hypervisor_results)
         assert_difference('::Katello::Host::SubscriptionFacet.count', 0) do
-          finalize_action(action)
+          run_action(action)
         end
       end
 
@@ -77,7 +86,7 @@ module Katello::Host
         action = create_action(::Actions::Katello::Host::HypervisorsUpdate)
 
         plan_action(action, :hypervisors => @hypervisor_results)
-        action = finalize_action(action)
+        action = run_action(action)
 
         action.state.must_equal :error
         action.error.message.must_equal "Host '#{@host.name}' does not belong to an organization"
